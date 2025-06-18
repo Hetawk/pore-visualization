@@ -777,11 +777,11 @@ class ParameterControlWidget(QWidget):
             'axis_x_scale': self.axis_x_scale.value(),
             'axis_y_scale': self.axis_y_scale.value(),
             'axis_z_scale': self.axis_z_scale.value(),
-            'sphere_base_size': self.sphere_base_size.value(),
+            'sphere_base_size': self.sphere_base_size.value(),            
             'space_width': self.space_width.value(),
             'space_height': self.space_height.value(),
             'space_depth': self.space_depth.value(),
-            'maintain_aspect_ratio': self.maintain_as
+            'maintain_aspect_ratio': self.maintain_aspect_ratio.isChecked(),
             'custom_aspect_ratio': [
                 self.aspect_width.value(),
                 self.aspect_height.value(),
