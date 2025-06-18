@@ -777,7 +777,7 @@ class ParameterControlWidget(QWidget):
             'axis_x_scale': self.axis_x_scale.value(),
             'axis_y_scale': self.axis_y_scale.value(),
             'axis_z_scale': self.axis_z_scale.value(),
-            'sphere_base_size': self.sphere_base_size.value(),            
+            'sphere_base_size': self.sphere_base_size.value(),
             'space_width': self.space_width.value(),
             'space_height': self.space_height.value(),
             'space_depth': self.space_depth.value(),
@@ -786,14 +786,94 @@ class ParameterControlWidget(QWidget):
                 self.aspect_width.value(),
                 self.aspect_height.value(),
                 self.aspect_depth.value()
-            ],
-            'show_bonds': self.show_bonds.isChecked(),
+            ],            'show_bonds': self.show_bonds.isChecked(),
             'bond_thickness': self.bond_thickness.value(),
             # DEM and live rendering parameters
             'particle_type': self.particle_type.currentText(),
             'camera_elevation': self.camera_elevation.value(),
             'camera_azimuth': self.camera_azimuth.value()
         }
+
+    def toggle_auto_rotation(self):
+        """Toggle automatic rotation animation."""
+        is_enabled = self.rotate_anim_btn.isChecked()
+        self.parameter_changed.emit('auto_rotation', is_enabled)
+
+    def reset_view_to_default(self):
+        """Reset all view parameters to default values."""
+        # Reset sliders to default positions if they exist
+        if hasattr(self, 'elevation_slider'):
+            self.elevation_slider.setValue(30)
+        if hasattr(self, 'azimuth_slider'):
+            self.azimuth_slider.setValue(-60)
+        if hasattr(self, 'roll_slider'):
+            self.roll_slider.setValue(0)
+
+        # Emit parameter change signals
+        self.parameter_changed.emit('view_elevation', 30)
+        self.parameter_changed.emit('view_azimuth', -60)
+        self.parameter_changed.emit('view_roll', 0)
+
+    def on_view_changed(self, param, value):
+        """Handle view parameter changes (elevation, azimuth, roll, zoom)."""
+        if self.realtime_update.isChecked():
+            self.parameter_changed.emit(f'view_{param}', value)
+
+    def handle_view_change(self, param_name, value):
+        """Handle view parameter changes - wrapper for on_view_changed."""
+        # Extract the parameter name (remove 'view_' prefix)
+        param = param_name.replace('view_', '')
+        self.on_view_changed(param, value)
+
+    def handle_flip_change(self, param_name, value):
+        """Handle flip/mirror parameter changes."""
+        # Extract the axis name (remove 'flip_' prefix)
+        axis = param_name.replace('flip_', '')
+        self.on_flip_changed(axis)
+
+    def handle_preset_view(self, view_name):
+        """Handle preset view changes."""
+        # This should call the existing preset view method if it exists
+        if hasattr(self, 'set_preset_view'):
+            self.set_preset_view(view_name)
+
+    def on_flip_changed(self, axis):
+        """Handle flip/mirror operations."""
+        button = getattr(self, f'flip_{axis}_btn')
+        is_flipped = button.isChecked()
+        self.parameter_changed.emit(f'flip_{axis}', is_flipped)
+
+    def set_preset_view(self, view_name):
+        """Set camera to a preset view position."""
+        # Define preset view angles
+        preset_views = {
+            'front': {'elevation': 0, 'azimuth': 0, 'roll': 0},
+            'back': {'elevation': 0, 'azimuth': 180, 'roll': 0},
+            'left': {'elevation': 0, 'azimuth': -90, 'roll': 0},
+            'right': {'elevation': 0, 'azimuth': 90, 'roll': 0},
+            'top': {'elevation': 90, 'azimuth': 0, 'roll': 0},
+            'bottom': {'elevation': -90, 'azimuth': 0, 'roll': 0},
+            'isometric': {'elevation': 30, 'azimuth': -60, 'roll': 0}
+        }
+
+        if view_name in preset_views:
+            view = preset_views[view_name]
+
+            # Update sliders without triggering signals
+            self.elevation_slider.blockSignals(True)
+            self.azimuth_slider.blockSignals(True)
+            self.roll_slider.blockSignals(True)
+
+            self.elevation_slider.setValue(view['elevation'])
+            self.azimuth_slider.setValue(view['azimuth'])
+            self.roll_slider.setValue(view['roll'])
+
+            self.elevation_slider.blockSignals(False)
+            self.azimuth_slider.blockSignals(False)
+            self.roll_slider.blockSignals(False)
+
+            # Emit the preset view change
+            self.parameter_changed.emit('preset_view', view_name)
 
 
 class PoreVisualizerGUI(QMainWindow):
@@ -1968,112 +2048,3 @@ Network Density: {stats.get('network_density', 0):.6f}
         """
 
         QMessageBox.information(self, "Network Statistics", stats_text)
-
-    def on_view_changed(self, param, value):
-        """Handle view parameter changes (elevation, azimuth, roll, zoom)."""
-        if self.realtime_update.isChecked():
-            self.parameter_changed.emit(f'view_{param}', value)
-
-    def on_flip_changed(self, axis):
-        """Handle flip/mirror operations."""
-        button = getattr(self, f'flip_{axis}_btn')
-        is_flipped = button.isChecked()
-        self.parameter_changed.emit(f'flip_{axis}', is_flipped)
-
-    def set_preset_view(self, view_name):
-        """Set camera to a preset view position."""
-        # Define preset view angles
-        preset_views = {
-            'front': {'elevation': 0, 'azimuth': 0, 'roll': 0},
-            'back': {'elevation': 0, 'azimuth': 180, 'roll': 0},
-            'left': {'elevation': 0, 'azimuth': -90, 'roll': 0},
-            'right': {'elevation': 0, 'azimuth': 90, 'roll': 0},
-            'top': {'elevation': 90, 'azimuth': 0, 'roll': 0},
-            'bottom': {'elevation': -90, 'azimuth': 0, 'roll': 0},
-            'isometric': {'elevation': 30, 'azimuth': -60, 'roll': 0}
-        }
-
-        if view_name in preset_views:
-            view = preset_views[view_name]
-
-            # Update sliders without triggering signals
-            self.elevation_slider.blockSignals(True)
-            self.azimuth_slider.blockSignals(True)
-            self.roll_slider.blockSignals(True)
-
-            self.elevation_slider.setValue(view['elevation'])
-            self.azimuth_slider.setValue(view['azimuth'])
-            self.roll_slider.setValue(view['roll'])
-
-            self.elevation_slider.blockSignals(False)
-            self.azimuth_slider.blockSignals(False)
-            self.roll_slider.blockSignals(False)
-
-            # Emit the preset view change
-            self.parameter_changed.emit('preset_view', view_name)
-
-    def toggle_auto_rotation(self):
-        """Toggle automatic rotation animation."""
-        is_enabled = self.rotate_anim_btn.isChecked()
-        self.parameter_changed.emit('auto_rotation', is_enabled)
-
-    def reset_view_to_default(self):
-        """Reset all view parameters to default values."""
-        # Reset sliders to default positions
-        self.elevation_slider.setValue(30)
-        self.azimuth_slider.setValue(-60)
-        self.roll_slider.setValue(0)
-        self.zoom_slider.setValue(100)
-
-        # Reset flip buttons
-        self.flip_x_btn.setChecked(False)
-        self.flip_y_btn.setChecked(False)
-        self.flip_z_btn.setChecked(False)
-
-        # Emit reset signal
-        self.parameter_changed.emit('reset_view', True)
-
-
-def main():
-    """Main application entry point."""
-    app = QApplication(sys.argv)
-    app.setApplicationName("Professional Pore Network Visualizer")
-    app.setApplicationVersion("2.0")
-    app.setOrganizationName("Scientific Visualization Lab")
-
-    # Set application icon if available
-    try:
-        app.setWindowIcon(QIcon("assets/icon.png"))
-    except:
-        pass
-
-    # Apply dark theme
-    app.setStyle('Fusion')
-
-    # Dark palette
-    palette = QPalette()
-    palette.setColor(QPalette.Window, QColor(53, 53, 53))
-    palette.setColor(QPalette.WindowText, QColor(255, 255, 255))
-    palette.setColor(QPalette.Base, QColor(25, 25, 25))
-    palette.setColor(QPalette.AlternateBase, QColor(53, 53, 53))
-    palette.setColor(QPalette.ToolTipBase, QColor(0, 0, 0))
-    palette.setColor(QPalette.ToolTipText, QColor(255, 255, 255))
-    palette.setColor(QPalette.Text, QColor(255, 255, 255))
-    palette.setColor(QPalette.Button, QColor(53, 53, 53))
-    palette.setColor(QPalette.ButtonText, QColor(255, 255, 255))
-    palette.setColor(QPalette.BrightText, QColor(255, 0, 0))
-    palette.setColor(QPalette.Link, QColor(42, 130, 218))
-    palette.setColor(QPalette.Highlight, QColor(42, 130, 218))
-    palette.setColor(QPalette.HighlightedText, QColor(0, 0, 0))
-    app.setPalette(palette)
-
-    # Create and show main window
-    window = PoreVisualizerGUI()
-    window.show()
-
-    # Start event loop
-    sys.exit(app.exec_())
-
-
-if __name__ == "__main__":
-    main()

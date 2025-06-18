@@ -25,6 +25,12 @@ opencv-python>=4.5.0
 # C++ bindings (optional, for performance)
 pybind11>=2.6.0
 
+# Enhanced OpenGL rendering
+moderngl>=5.6.0
+moderngl-window>=2.4.0
+PyOpenGL>=3.1.0
+PyOpenGL-accelerate>=3.1.0
+
 # Additional utilities
 tqdm>=4.62.0
 colorama>=0.4.4
