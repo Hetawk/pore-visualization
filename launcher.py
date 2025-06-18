@@ -16,6 +16,34 @@ def main():
     app_dir = Path(__file__).parent / 'app'
     sys.path.insert(0, str(app_dir))
 
+    # Helper function to safely log messages
+    def safe_log(message, level='info'):
+        """Safely log a message, fallback to print if logger not available."""
+        if main_log:
+            getattr(main_log, level)(message)
+        else:
+            print(f"[{level.upper()}] {message}")
+
+    # Helper function to safely log import attempts
+    def safe_log_import(module_name, success, error_msg=None):
+        """Safely log import attempts."""
+        if logger:
+            logger.log_import_attempt(module_name, success, error_msg)
+        else:
+            status = "✓" if success else "✗"
+            msg = f"Import {module_name}: {status}"
+            if error_msg:
+                msg += f" - {error_msg}"
+            print(msg)
+
+    # Helper function to safely log GUI events
+    def safe_log_gui_event(event, details):
+        """Safely log GUI events."""
+        if logger:
+            logger.log_gui_event(event, details)
+        else:
+            print(f"[GUI] {event}: {details}")
+
     # Initialize comprehensive logging FIRST - save to out/logs/
     try:
         from core.logger import init_debug_logging, get_logger, close_debug_logging
@@ -28,52 +56,53 @@ def main():
         print(f"⚠️  Failed to initialize logging: {e}")
         print("Continuing without advanced logging...")
         logger = None
+        main_log = None
 
     try:
-        main_log.info("Adding app directory to Python path")
-        main_log.info(f"App directory: {app_dir}")
+        safe_log("Adding app directory to Python path")
+        safe_log(f"App directory: {app_dir}")
 
         # Test imports one by one with logging
-        main_log.info("Testing core imports...")
+        safe_log("Testing core imports...")
 
         try:
             import PyQt5
-            logger.log_import_attempt("PyQt5", True)
+            safe_log_import("PyQt5", True)
         except ImportError as e:
-            logger.log_import_attempt("PyQt5", False, str(e))
+            safe_log_import("PyQt5", False, str(e))
             raise
 
         try:
             from PyQt5.QtWidgets import QApplication
             from PyQt5.QtGui import QPalette, QColor
-            logger.log_import_attempt("PyQt5.QtWidgets/QtGui", True)
+            safe_log_import("PyQt5.QtWidgets/QtGui", True)
         except ImportError as e:
-            logger.log_import_attempt("PyQt5.QtWidgets/QtGui", False, str(e))
+            safe_log_import("PyQt5.QtWidgets/QtGui", False, str(e))
             raise
 
         try:
             from pore_visualizer_gui import PoreVisualizerGUI
-            logger.log_import_attempt("pore_visualizer_gui", True)
+            safe_log_import("pore_visualizer_gui", True)
         except ImportError as e:
-            logger.log_import_attempt("pore_visualizer_gui", False, str(e))
+            safe_log_import("pore_visualizer_gui", False, str(e))
             raise
 
         print("🚀 Launching Professional Pore Network Visualizer...")
-        main_log.info("Creating QApplication instance")
+        safe_log("Creating QApplication instance")
 
         # Create QApplication with detailed logging
         app = QApplication(sys.argv)
-        logger.log_gui_event("QApplication created", f"Args: {sys.argv}")
+        safe_log_gui_event("QApplication created", f"Args: {sys.argv}")
 
         app.setApplicationName("Professional Pore Network Visualizer")
         app.setApplicationVersion("2.0")
         app.setOrganizationName("Scientific Visualization Lab")
-        main_log.info("QApplication properties set")
+        safe_log("QApplication properties set")
 
         # Apply dark theme with logging
-        main_log.info("Applying dark theme...")
+        safe_log("Applying dark theme...")
         app.setStyle('Fusion')
-        logger.log_gui_event("Style set", "Fusion")
+        safe_log_gui_event("Style set", "Fusion")
 
         # Dark palette
         palette = QPalette()
@@ -91,40 +120,48 @@ def main():
         palette.setColor(QPalette.Highlight, QColor(42, 130, 218))
         palette.setColor(QPalette.HighlightedText, QColor(0, 0, 0))
         app.setPalette(palette)
-        logger.log_gui_event("Dark palette applied", "Custom dark theme")
+        safe_log_gui_event("Dark palette applied", "Custom dark theme")
 
         # Create main window with detailed logging
-        main_log.info("Creating PoreVisualizerGUI instance...")
+        safe_log("Creating PoreVisualizerGUI instance...")
         try:
             window = PoreVisualizerGUI()
-            logger.log_gui_event("Main window created",
-                                 "PoreVisualizerGUI instantiated")
-            main_log.info("✓ Main window created successfully")
+            safe_log_gui_event("Main window created",
+                               "PoreVisualizerGUI instantiated")
+            safe_log("✓ Main window created successfully")
         except Exception as e:
-            logger.log_exception(e, "Creating main window")
+            if logger:
+                logger.log_exception(e, "Creating main window")
+            else:
+                safe_log(f"Exception creating main window: {e}", "error")
             raise
 
         # Show window with logging
-        main_log.info("Showing main window...")
+        safe_log("Showing main window...")
         try:
             window.show()
-            logger.log_gui_event("Main window shown", "window.show() called")
-            main_log.info("✓ Main window displayed")
+            safe_log_gui_event("Main window shown", "window.show() called")
+            safe_log("✓ Main window displayed")
         except Exception as e:
-            logger.log_exception(e, "Showing main window")
+            if logger:
+                logger.log_exception(e, "Showing main window")
+            else:
+                safe_log(f"Exception showing main window: {e}", "error")
             raise
 
         print("✅ GUI window created and displayed")
-        main_log.info("Starting QApplication event loop...")
+        safe_log("Starting QApplication event loop...")
 
         # Start event loop with proper error handling
         try:
             exit_code = app.exec_()
-            main_log.info(
-                f"QApplication event loop exited with code: {exit_code}")
+            safe_log(f"QApplication event loop exited with code: {exit_code}")
             return exit_code
         except Exception as e:
-            logger.log_exception(e, "QApplication event loop")
+            if logger:
+                logger.log_exception(e, "QApplication event loop")
+            else:
+                safe_log(f"Exception in QApplication event loop: {e}", "error")
             raise
 
     except ImportError as e:
@@ -132,18 +169,21 @@ def main():
         print(f"❌ {error_msg}")
         if logger:
             logger.log_exception(e, "GUI component imports")
+        else:
+            safe_log(f"Import error: {e}", "error")
         print("🔧 Make sure PyQt5 is installed: pip install PyQt5")
         return 1
     except KeyboardInterrupt:
         print("\n👋 Application closed by user.")
-        if logger:
-            main_log.info("Application interrupted by user (Ctrl+C)")
+        safe_log("Application interrupted by user (Ctrl+C)")
         return 0
     except Exception as e:
         error_msg = f"Failed to launch application: {e}"
         print(f"❌ {error_msg}")
         if logger:
             logger.log_exception(e, "Application launch")
+        else:
+            safe_log(f"Application launch error: {e}", "error")
         print("\n🔧 Try running from the app directory directly:")
         print(f"   cd {app_dir}")
         print("   python pore_visualizer_gui.py")

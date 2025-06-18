@@ -4,6 +4,9 @@ MIST-like PyQt GUI Application for Interactive 3D Pore Network Visualization
 Professional interface for scientific data analysis and visualization
 """
 
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from pathlib import Path
 import os
 import sys
@@ -26,21 +29,23 @@ from PyQt5.QtWidgets import (
     QStatusBar, QMenuBar, QAction, QToolBar, QColorDialog, QMessageBox,
     QScrollArea, QSizePolicy
 )
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
-from matplotlib.figure import Figure
 import matplotlib
-# Configure matplotlib to avoid threading issues
-matplotlib.use('Qt5Agg')
-# Set matplotlib to thread-safe mode
-plt.ioff()  # Turn off interactive mode to prevent GUI issues in threads
+# Configure matplotlib to prevent popup windows
+matplotlib.use('Agg')
+# Disable interactive mode completely
+plt.ioff()
+# Set backend to non-interactive
+matplotlib.rcParams['backend'] = 'Agg'
+
+matplotlib.rcParams['interactive'] = False
+
 
 # Add current directory to path for imports
 sys.path.append(str(Path(__file__).parent))
 
 
 # Configure matplotlib backend before importing PyQt5
-matplotlib.use('Qt5Agg')
+matplotlib.use('Agg')
 
 
 class VisualizationThread(QThread):
@@ -51,31 +56,69 @@ class VisualizationThread(QThread):
     error = pyqtSignal(str)
     progress = pyqtSignal(int)
 
-    def __init__(self, engine: VisualizationEngine, data_path: str, viz_type: str):
+    def __init__(self, engine: VisualizationEngine, data_path: str, viz_type: str, **kwargs):
         super().__init__()
         self.engine = engine
         self.data_path = data_path
         self.viz_type = viz_type
+        self.kwargs = kwargs
 
     def run(self):
         try:
             self.progress.emit(25)
-            print(f"Creating visualization of type: {self.viz_type}")
+            # Handle volumetric visualization in background thread to prevent GUI freezing
+            print(
+                f"VisualizationThread: Creating visualization of type: {self.viz_type}")
+            if self.viz_type == '3d_volumetric':
+                print(
+                    "VisualizationThread: Processing 3D volumetric visualization in background thread")
+                self.progress.emit(50)
+                # Get sample type from kwargs, default to 'all'
+                sample_type = self.kwargs.get('sample_type', 'all')
+                print(f"VisualizationThread: Sample type: {sample_type}")
 
-            # Always defer matplotlib figure creation to main thread to avoid threading issues
-            plot_data = {
-                'viz_type': self.viz_type,
-                'data_path': self.data_path,
-                'status': 'needs_main_thread_plotting'
-            }
+                # Import matplotlib threading fix
+                import matplotlib
+                matplotlib.use('Agg')  # Use non-interactive backend in thread
 
-            self.progress.emit(100)
-            self.finished.emit(plot_data)
+                # Call the method that exists in the engine
+                figure = self.engine.create_volumetric_pore_visualization_with_options(
+                    self.data_path, sample_type)
+
+                plot_data = {
+                    'viz_type': self.viz_type,
+                    'data_path': self.data_path,
+                    'status': 'complete',
+                    'figure': figure
+                }
+                self.progress.emit(100)
+                print(
+                    "VisualizationThread: Volumetric visualization completed, emitting finished signal")
+                self.finished.emit(plot_data)
+            else:
+                # For other visualizations, defer to main thread to avoid threading issues
+                plot_data = {
+                    'viz_type': self.viz_type,
+                    'data_path': self.data_path,
+                    'status': 'needs_main_thread_plotting'
+                }
+                self.progress.emit(100)
+                self.finished.emit(plot_data)
         except Exception as e:
             import traceback
             error_msg = f"Visualization error: {str(e)}\n{traceback.format_exc()}"
 
             # Enhanced error logging
+            try:
+                from core.logger import get_logger
+                logger = get_logger()
+                if logger:
+                    logger.log_exception(e, "VisualizationThread")
+                    logger.log_visualization_step(
+                        "thread_error", error_msg[:200])
+            except Exception as log_err:
+                # Enhanced error logging
+                print(f"Failed to log thread error: {log_err}")
             try:
                 from core.logger import get_logger
                 logger = get_logger()
@@ -482,9 +525,223 @@ class ParameterControlWidget(QWidget):
         mist_group.setLayout(mist_layout)
         layout.addWidget(mist_group)
 
+        # 3D Volumetric Visualization Group
+        volumetric_group = QGroupBox("3D Volumetric Visualization")
+        volumetric_layout = QGridLayout()
+        volumetric_layout.setSpacing(6)
+
+        # Sample selection for volumetric visualization
+        volumetric_layout.addWidget(QLabel("Sample Type:"), 0, 0)
+        self.volumetric_sample_combo = QComboBox()
+        self.volumetric_sample_combo.addItems(
+            ["All Samples", "T1 Only", "T2 Only", "T3 Only"])
+        self.volumetric_sample_combo.setMinimumHeight(25)
+        volumetric_layout.addWidget(self.volumetric_sample_combo, 0, 1)
+
+        # Volumetric visualization buttons
+        self.create_volumetric_btn = QPushButton("Create 3D Volumetric View")
+        self.create_volumetric_btn.setMinimumHeight(30)
+        self.create_volumetric_btn.setStyleSheet(
+            "QPushButton { font-weight: bold; background-color: #3498db; color: white; }")
+        self.create_volumetric_btn.clicked.connect(
+            lambda: self.preset_mode_changed.emit('3d_volumetric'))
+        volumetric_layout.addWidget(self.create_volumetric_btn, 1, 0, 1, 2)
+
+        # Individual sample buttons
+        self.volumetric_t1_btn = QPushButton("T1 Volumetric")
+        self.volumetric_t1_btn.setMinimumHeight(25)
+        self.volumetric_t1_btn.setStyleSheet(
+            "QPushButton { background-color: #e74c3c; color: white; }")
+        self.volumetric_t1_btn.clicked.connect(
+            lambda: self.preset_mode_changed.emit('volumetric_t1'))
+        volumetric_layout.addWidget(self.volumetric_t1_btn, 2, 0)
+
+        self.volumetric_t2_btn = QPushButton("T2 Volumetric")
+        self.volumetric_t2_btn.setMinimumHeight(25)
+        self.volumetric_t2_btn.setStyleSheet(
+            "QPushButton { background-color: #3498db; color: white; }")
+        self.volumetric_t2_btn.clicked.connect(
+            lambda: self.preset_mode_changed.emit('volumetric_t2'))
+        volumetric_layout.addWidget(self.volumetric_t2_btn, 2, 1)
+
+        self.volumetric_t3_btn = QPushButton("T3 Volumetric")
+        self.volumetric_t3_btn.setMinimumHeight(25)
+        self.volumetric_t3_btn.setStyleSheet(
+            "QPushButton { background-color: #f39c12; color: white; }")
+        self.volumetric_t3_btn.clicked.connect(
+            lambda: self.preset_mode_changed.emit('volumetric_t3'))
+        volumetric_layout.addWidget(self.volumetric_t3_btn, 3, 0, 1, 2)
+
+        volumetric_group.setLayout(volumetric_layout)
+        layout.addWidget(volumetric_group)
+
         # Add stretch and set layout
         layout.addStretch()
         self.setLayout(layout)
+
+        # Add Interactive 3D Controls Group
+        interactive_group = QGroupBox("Interactive 3D Controls")
+        interactive_layout = QGridLayout()
+        interactive_layout.setSpacing(6)
+
+        # View Controls
+        view_label = QLabel("Camera & View Controls")
+        view_label.setStyleSheet("font-weight: bold; color: #2c3e50;")
+        interactive_layout.addWidget(view_label, 0, 0, 1, 2)
+
+        # Elevation angle (vertical rotation)
+        interactive_layout.addWidget(QLabel("Elevation (°):"), 1, 0)
+        self.elevation_slider = QSlider(Qt.Horizontal)
+        self.elevation_slider.setRange(-90, 90)
+        self.elevation_slider.setValue(30)
+        self.elevation_slider.setTickPosition(QSlider.TicksBelow)
+        self.elevation_slider.setTickInterval(30)
+        self.elevation_slider.valueChanged.connect(
+            lambda v: self.on_view_changed('elevation', v))
+        interactive_layout.addWidget(self.elevation_slider, 1, 1)
+
+        # Azimuth angle (horizontal rotation)
+        interactive_layout.addWidget(QLabel("Azimuth (°):"), 2, 0)
+        self.azimuth_slider = QSlider(Qt.Horizontal)
+        self.azimuth_slider.setRange(-180, 180)
+        self.azimuth_slider.setValue(-60)
+        self.azimuth_slider.setTickPosition(QSlider.TicksBelow)
+        self.azimuth_slider.setTickInterval(60)
+        self.azimuth_slider.valueChanged.connect(
+            lambda v: self.on_view_changed('azimuth', v))
+        interactive_layout.addWidget(self.azimuth_slider, 2, 1)
+
+        # Roll angle (camera roll)
+        interactive_layout.addWidget(QLabel("Roll (°):"), 3, 0)
+        self.roll_slider = QSlider(Qt.Horizontal)
+        self.roll_slider.setRange(-180, 180)
+        self.roll_slider.setValue(0)
+        self.roll_slider.setTickPosition(QSlider.TicksBelow)
+        self.roll_slider.setTickInterval(60)
+        self.roll_slider.valueChanged.connect(
+            lambda v: self.on_view_changed('roll', v))
+        interactive_layout.addWidget(self.roll_slider, 3, 1)
+
+        # Distance/Zoom
+        interactive_layout.addWidget(QLabel("Zoom Level:"), 4, 0)
+        self.zoom_slider = QSlider(Qt.Horizontal)
+        self.zoom_slider.setRange(50, 200)
+        self.zoom_slider.setValue(100)
+        self.zoom_slider.setTickPosition(QSlider.TicksBelow)
+        self.zoom_slider.setTickInterval(25)
+        self.zoom_slider.valueChanged.connect(
+            lambda v: self.on_view_changed('zoom', v))
+        interactive_layout.addWidget(self.zoom_slider, 4, 1)
+
+        # Flip Controls
+        flip_label = QLabel("Flip & Mirror Controls")
+        flip_label.setStyleSheet("font-weight: bold; color: #2c3e50;")
+        interactive_layout.addWidget(flip_label, 5, 0, 1, 2)
+
+        # Flip buttons layout
+        flip_widget = QWidget()
+        flip_layout = QHBoxLayout()
+        flip_layout.setContentsMargins(0, 0, 0, 0)
+        flip_layout.setSpacing(4)
+
+        self.flip_x_btn = QPushButton("Flip X")
+        self.flip_x_btn.setCheckable(True)
+        self.flip_x_btn.clicked.connect(lambda: self.on_flip_changed('x'))
+        flip_layout.addWidget(self.flip_x_btn)
+
+        self.flip_y_btn = QPushButton("Flip Y")
+        self.flip_y_btn.setCheckable(True)
+        self.flip_y_btn.clicked.connect(lambda: self.on_flip_changed('y'))
+        flip_layout.addWidget(self.flip_y_btn)
+
+        self.flip_z_btn = QPushButton("Flip Z")
+        self.flip_z_btn.setCheckable(True)
+        self.flip_z_btn.clicked.connect(lambda: self.on_flip_changed('z'))
+        flip_layout.addWidget(self.flip_z_btn)
+
+        flip_widget.setLayout(flip_layout)
+        interactive_layout.addWidget(flip_widget, 6, 0, 1, 2)
+
+        # Preset View Buttons
+        preset_view_label = QLabel("Preset Views")
+        preset_view_label.setStyleSheet("font-weight: bold; color: #2c3e50;")
+        interactive_layout.addWidget(preset_view_label, 7, 0, 1, 2)
+
+        preset_widget = QWidget()
+        preset_layout = QGridLayout()
+        preset_layout.setContentsMargins(0, 0, 0, 0)
+        preset_layout.setSpacing(4)
+
+        # View preset buttons
+        self.front_view_btn = QPushButton("Front")
+        self.front_view_btn.clicked.connect(
+            lambda: self.set_preset_view('front'))
+        preset_layout.addWidget(self.front_view_btn, 0, 0)
+
+        self.back_view_btn = QPushButton("Back")
+        self.back_view_btn.clicked.connect(
+            lambda: self.set_preset_view('back'))
+        preset_layout.addWidget(self.back_view_btn, 0, 1)
+
+        self.left_view_btn = QPushButton("Left")
+        self.left_view_btn.clicked.connect(
+            lambda: self.set_preset_view('left'))
+        preset_layout.addWidget(self.left_view_btn, 1, 0)
+
+        self.right_view_btn = QPushButton("Right")
+        self.right_view_btn.clicked.connect(
+            lambda: self.set_preset_view('right'))
+        preset_layout.addWidget(self.right_view_btn, 1, 1)
+
+        self.top_view_btn = QPushButton("Top")
+        self.top_view_btn.clicked.connect(lambda: self.set_preset_view('top'))
+        preset_layout.addWidget(self.top_view_btn, 2, 0)
+
+        self.bottom_view_btn = QPushButton("Bottom")
+        self.bottom_view_btn.clicked.connect(
+            lambda: self.set_preset_view('bottom'))
+        preset_layout.addWidget(self.bottom_view_btn, 2, 1)
+
+        self.isometric_view_btn = QPushButton("Isometric")
+        self.isometric_view_btn.clicked.connect(
+            lambda: self.set_preset_view('isometric'))
+        preset_layout.addWidget(self.isometric_view_btn, 3, 0, 1, 2)
+
+        preset_widget.setLayout(preset_layout)
+        interactive_layout.addWidget(preset_widget, 8, 0, 1, 2)
+
+        # Real-time update checkbox
+        self.realtime_update = QCheckBox("Real-time Updates")
+        self.realtime_update.setChecked(True)
+        self.realtime_update.setToolTip(
+            "Update visualization in real-time as you move sliders")
+        interactive_layout.addWidget(self.realtime_update, 9, 0, 1, 2)
+
+        # Animation controls
+        animation_label = QLabel("Animation Controls")
+        animation_label.setStyleSheet("font-weight: bold; color: #2c3e50;")
+        interactive_layout.addWidget(animation_label, 10, 0, 1, 2)
+
+        # Animation buttons
+        anim_widget = QWidget()
+        anim_layout = QHBoxLayout()
+        anim_layout.setContentsMargins(0, 0, 0, 0)
+        anim_layout.setSpacing(4)
+
+        self.rotate_anim_btn = QPushButton("Auto Rotate")
+        self.rotate_anim_btn.setCheckable(True)
+        self.rotate_anim_btn.clicked.connect(self.toggle_auto_rotation)
+        anim_layout.addWidget(self.rotate_anim_btn)
+
+        self.reset_view_btn = QPushButton("Reset View")
+        self.reset_view_btn.clicked.connect(self.reset_view_to_default)
+        anim_layout.addWidget(self.reset_view_btn)
+
+        anim_widget.setLayout(anim_layout)
+        interactive_layout.addWidget(anim_widget, 11, 0, 1, 2)
+
+        interactive_group.setLayout(interactive_layout)
+        layout.addWidget(interactive_group)
 
     def choose_prism_color(self):
         """Choose prism color."""
@@ -524,7 +781,7 @@ class ParameterControlWidget(QWidget):
             'space_width': self.space_width.value(),
             'space_height': self.space_height.value(),
             'space_depth': self.space_depth.value(),
-            'maintain_aspect_ratio': self.maintain_aspect_ratio.isChecked(),
+            'maintain_aspect_ratio': self.maintain_as
             'custom_aspect_ratio': [
                 self.aspect_width.value(),
                 self.aspect_height.value(),
@@ -567,6 +824,26 @@ class PoreVisualizerGUI(QMainWindow):
         self.data_manager = DataManager()
         self.visualization_engine = VisualizationEngine()
         self.pore_analyzer = PoreAnalyzer()
+
+        # Initialize enhanced visualization engine for realistic rendering
+        try:
+            from core.live_3d_renderer import LivePore3DRenderer
+            self.live_3d_renderer = LivePore3DRenderer()
+            self.logger.info("✓ Live 3D renderer initialized")
+        except Exception as e:
+            self.logger.warning(f"Live 3D renderer not available: {e}")
+            self.live_3d_renderer = None
+
+        # Try enhanced visualization engine
+        try:
+            from core.enhanced_visualization_engine import EnhancedPoreVisualizationEngine
+            self.enhanced_viz_engine = EnhancedPoreVisualizationEngine()
+            self.embedded_opengl_widget = self.enhanced_viz_engine.get_embedded_widget()
+            self.logger.info("✓ Enhanced visualization engine initialized")
+        except Exception as e:
+            self.logger.warning(f"Enhanced visualization not available: {e}")
+            self.enhanced_viz_engine = None
+            self.embedded_opengl_widget = None
 
         # GUI state
         self.current_data_path = None
@@ -648,16 +925,15 @@ class PoreVisualizerGUI(QMainWindow):
         file_layout.addWidget(self.file_label)
 
         file_group.setLayout(file_layout)
-        layout.addWidget(file_group)
-
-        # Visualization type
+        layout.addWidget(file_group)        # Visualization type
         viz_group = QGroupBox("Visualization Type")
         viz_layout = QVBoxLayout()
 
         self.viz_type = QComboBox()
         self.viz_type.addItems([
             'pore_network', 'size_distribution', 'clustering_analysis',
-            'ultra_realistic', 'scientific_analysis', 'presentation', 'cross_section'
+            'ultra_realistic', 'scientific_analysis', 'presentation', 'cross_section',
+            '3d_volumetric'
         ])
         self.viz_type.setMinimumHeight(30)
         viz_layout.addWidget(self.viz_type)
@@ -702,18 +978,99 @@ class PoreVisualizerGUI(QMainWindow):
         return panel
 
     def create_right_panel(self):
-        """Create the right visualization panel."""
+        """Create the right visualization panel with tabbed interface."""
         panel = QWidget()
         layout = QVBoxLayout()
 
-        # Create matplotlib figure and canvas
+        # Create tabbed interface for different visualization modes
+        self.viz_tabs = QTabWidget()
+
+        # Tab 1: Traditional matplotlib visualizations
+        matplotlib_tab = QWidget()
+        matplotlib_layout = QVBoxLayout()        # Create matplotlib figure and canvas
         self.figure = Figure(figsize=(12, 8))
         self.canvas = FigureCanvas(self.figure)
+        self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.toolbar = NavigationToolbar(self.canvas, self)
 
-        layout.addWidget(self.toolbar)
-        layout.addWidget(self.canvas)
+        # Create a scroll area for the canvas to handle large visualizations
+        scroll_area = QScrollArea()
+        scroll_area.setWidget(self.canvas)
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
 
+        matplotlib_layout.addWidget(self.toolbar)
+        matplotlib_layout.addWidget(scroll_area)
+        matplotlib_tab.setLayout(matplotlib_layout)
+
+        self.viz_tabs.addTab(matplotlib_tab, "2D/3D Plots")
+
+        # Tab 2: Live realistic 3D rendering (always available)
+        if self.live_3d_renderer:
+            self.viz_tabs.addTab(self.live_3d_renderer, "Live 3D View")
+
+        # Tab 3: Enhanced realistic 3D rendering (if OpenGL available)
+        if self.embedded_opengl_widget:
+            self.viz_tabs.addTab(
+                self.embedded_opengl_widget, "Advanced 3D View")
+
+            # Add controls for the realistic view
+            realistic_controls = QWidget()
+            controls_layout = QHBoxLayout()
+
+            # Connection threshold control
+            controls_layout.addWidget(QLabel("Bond Threshold:"))
+            self.bond_threshold_slider = QSlider(Qt.Horizontal)
+            self.bond_threshold_slider.setRange(10, 50)
+            self.bond_threshold_slider.setValue(20)
+            self.bond_threshold_slider.valueChanged.connect(
+                self.update_realistic_view)
+            controls_layout.addWidget(self.bond_threshold_slider)
+
+            # Pore size range controls
+            controls_layout.addWidget(QLabel("Min Size (nm):"))
+            self.min_size_spin = QSpinBox()
+            self.min_size_spin.setRange(1, 1000)
+            self.min_size_spin.setValue(10)
+            self.min_size_spin.valueChanged.connect(self.update_realistic_view)
+            controls_layout.addWidget(self.min_size_spin)
+
+            controls_layout.addWidget(QLabel("Max Size (nm):"))
+            self.max_size_spin = QSpinBox()
+            self.max_size_spin.setRange(100, 10000)
+            self.max_size_spin.setValue(1000)
+            self.max_size_spin.valueChanged.connect(self.update_realistic_view)
+            controls_layout.addWidget(self.max_size_spin)
+
+            # Board type selection for realistic view
+            controls_layout.addWidget(QLabel("Board Type:"))
+            self.realistic_board_combo = QComboBox()
+            self.realistic_board_combo.addItems(["T1", "T2", "T3"])
+            self.realistic_board_combo.currentTextChanged.connect(
+                self.update_realistic_view)
+            controls_layout.addWidget(self.realistic_board_combo)
+
+            # Update button
+            update_realistic_btn = QPushButton("Update Realistic View")
+            update_realistic_btn.clicked.connect(
+                self.create_realistic_visualization)
+            controls_layout.addWidget(update_realistic_btn)
+
+            controls_layout.addStretch()
+            realistic_controls.setLayout(controls_layout)
+
+            # Add controls above the OpenGL widget
+            realistic_tab_layout = QVBoxLayout()
+            realistic_tab_layout.addWidget(realistic_controls)
+            realistic_tab_layout.addWidget(self.embedded_opengl_widget, 1)
+
+            realistic_tab = QWidget()
+            realistic_tab.setLayout(realistic_tab_layout)
+            self.viz_tabs.removeTab(1)  # Remove the direct widget
+            self.viz_tabs.addTab(realistic_tab, "Realistic 3D View")
+
+        layout.addWidget(self.viz_tabs)
         panel.setLayout(layout)
         return panel
 
@@ -771,9 +1128,42 @@ class PoreVisualizerGUI(QMainWindow):
         generate_action.triggered.connect(self.generate_visualization)
         toolbar.addAction(generate_action)
 
+        # Add realistic visualization actions if available
+        if self.enhanced_viz_engine:
+            toolbar.addSeparator()
+
+            realistic_action = QAction('Realistic 3D', self)
+            realistic_action.setToolTip(
+                'Create realistic 3D pore network visualization')
+            realistic_action.triggered.connect(
+                self.create_realistic_visualization)
+            toolbar.addAction(realistic_action)
+
+            auto_refresh_action = QAction('Auto-Refresh', self)
+            auto_refresh_action.setCheckable(True)
+            auto_refresh_action.setToolTip(
+                'Toggle automatic refresh of realistic view')
+            auto_refresh_action.triggered.connect(self.toggle_auto_refresh)
+            toolbar.addAction(auto_refresh_action)
+
+            stats_action = QAction('Network Stats', self)
+            stats_action.setToolTip('Show network statistics')
+            stats_action.triggered.connect(self.show_network_statistics)
+            toolbar.addAction(stats_action)
+
+        toolbar.addSeparator()
+
         export_action = QAction('Export', self)
         export_action.triggered.connect(self.export_visualization)
         toolbar.addAction(export_action)
+
+        if self.enhanced_viz_engine:
+            export_realistic_action = QAction('Export 3D', self)
+            export_realistic_action.setToolTip(
+                'Export high-resolution realistic view')
+            export_realistic_action.triggered.connect(
+                self.export_realistic_view)
+            toolbar.addAction(export_realistic_action)
 
     def load_data_file(self):
         """Load pore data file."""
@@ -796,6 +1186,18 @@ class PoreVisualizerGUI(QMainWindow):
                 self.status_bar.showMessage(f"Data loaded: {file_path}")
                 self.logger.info(f"Data loaded from {file_path}")
 
+                # Load data into live 3D renderer
+                if self.live_3d_renderer:
+                    if self.live_3d_renderer.load_data(file_path):
+                        self.logger.info("✓ Live 3D renderer data loaded")
+                        # Switch to Live 3D tab and show it
+                        if self.viz_tabs.count() > 1:
+                            self.viz_tabs.setCurrentIndex(1)  # Live 3D tab
+
+                # Load data into enhanced engine if available
+                if self.enhanced_viz_engine:
+                    self.enhanced_viz_engine.load_data(file_path)
+
             except Exception as e:
                 QMessageBox.critical(self, "Load Error",
                                      f"Failed to load data:\n{str(e)}")
@@ -811,7 +1213,7 @@ class PoreVisualizerGUI(QMainWindow):
         viz_type = self.viz_type.currentText()
         self.generate_visualization_with_type(viz_type)
 
-    def generate_visualization_with_type(self, viz_type):
+    def generate_visualization_with_type(self, viz_type, **kwargs):
         """Generate visualization with specific type using thread."""
         if not self.current_data_path:
             QMessageBox.warning(
@@ -827,9 +1229,26 @@ class PoreVisualizerGUI(QMainWindow):
         self.progress_bar.setValue(0)
         self.generate_btn.setEnabled(False)
 
+        # For volumetric visualization, get sample type from combo box
+        if viz_type == '3d_volumetric' and 'sample_type' not in kwargs:
+            if hasattr(self, 'volumetric_sample_combo'):
+                combo_text = self.volumetric_sample_combo.currentText()
+                if combo_text == "All Samples":
+                    kwargs['sample_type'] = 'all'
+                elif combo_text == "T1 Only":
+                    kwargs['sample_type'] = 'T1'
+                elif combo_text == "T2 Only":
+                    kwargs['sample_type'] = 'T2'
+                elif combo_text == "T3 Only":
+                    kwargs['sample_type'] = 'T3'
+                else:
+                    kwargs['sample_type'] = 'all'
+            else:
+                kwargs['sample_type'] = 'all'
+
         # Start visualization in background thread
         self.visualization_thread = VisualizationThread(
-            self.visualization_engine, self.current_data_path, viz_type
+            self.visualization_engine, self.current_data_path, viz_type, **kwargs
         )
         self.visualization_thread.finished.connect(
             self.on_visualization_finished)
@@ -864,7 +1283,17 @@ class PoreVisualizerGUI(QMainWindow):
                     self.current_data_path, particle_type)
                 self.on_visualization_finished(fig)
 
-            elif mode in ['ultra_realistic', 'scientific_analysis', 'presentation', 'cross_section']:
+            elif mode == 'ultra_realistic':
+                # Use enhanced realistic visualization
+                if self.enhanced_viz_engine:
+                    self.progress_bar.setValue(50)
+                    self.create_realistic_visualization()
+                    self.progress_bar.setVisible(False)
+                    return
+                else:                    # Fallback to regular visualization
+                    self.generate_visualization_with_type(mode)
+
+            elif mode in ['scientific_analysis', 'presentation', 'cross_section']:
                 # Use advanced visualization engine
                 if hasattr(self.visualization_engine, 'create_advanced_visualization'):
                     fig = self.visualization_engine.create_advanced_visualization(
@@ -873,6 +1302,27 @@ class PoreVisualizerGUI(QMainWindow):
                 else:
                     # Fallback to regular visualization - use thread
                     self.generate_visualization_with_type(mode)
+
+            elif mode == '3d_volumetric':
+                # Create 3D volumetric visualization for all samples using background thread
+                self.generate_visualization_with_type(
+                    '3d_volumetric', sample_type='all')
+
+            elif mode == 'volumetric_t1':
+                # Create 3D volumetric visualization for T1 sample only using background thread
+                self.generate_visualization_with_type(
+                    '3d_volumetric', sample_type='T1')
+
+            elif mode == 'volumetric_t2':
+                # Create 3D volumetric visualization for T2 sample only using background thread
+                self.generate_visualization_with_type(
+                    '3d_volumetric', sample_type='T2')
+
+            elif mode == 'volumetric_t3':
+                # Create 3D volumetric visualization for T3 sample only using background thread
+                self.generate_visualization_with_type(
+                    '3d_volumetric', sample_type='T3')
+
             else:
                 # Fallback to regular visualization - use thread
                 self.generate_visualization_with_type(mode)
@@ -893,10 +1343,24 @@ class PoreVisualizerGUI(QMainWindow):
                 if plot_data.get('status') == 'needs_main_thread_plotting':
                     # Create visualization in main thread to avoid matplotlib threading issues
                     print(
-                        f"Creating {plot_data['viz_type']} visualization in main thread")
-                    figure = self.visualization_engine.create_pore_network_visualization(
-                        plot_data['data_path'], plot_data['viz_type'])
+                        f"MainThread: Creating {plot_data['viz_type']} visualization in main thread")
+
+                    # Handle different visualization types correctly
+                    viz_type = plot_data['viz_type']
+                    if viz_type == '3d_volumetric':
+                        print(
+                            "MainThread: ERROR - Volumetric visualization should never run on main thread!")
+                        print(
+                            "MainThread: This indicates a bug in the threading logic.")
+                        # Don't process volumetric on main thread - this should not happen
+                        figure = None
+                    else:
+                        # Default to pore network visualization for other types
+                        figure = self.visualization_engine.create_pore_network_visualization(
+                            plot_data['data_path'], viz_type)
                 elif plot_data.get('status') == 'complete':
+                    print(
+                        "MainThread: Received completed visualization from background thread")
                     figure = plot_data.get('figure')
                 else:
                     figure = None
@@ -904,75 +1368,93 @@ class PoreVisualizerGUI(QMainWindow):
                 # Backward compatibility - assume it's a figure
                 figure = plot_data
 
-            # Copy the generated figure's content to our canvas figure
+            # Handle the generated figure
+            # Check if this is a volumetric visualization with multiple subplots
             if figure and len(figure.axes) > 0:
-                # Get the source axis from generated figure
-                source_ax = figure.axes[0]
+                if len(figure.axes) > 1:
+                    # For volumetric visualizations with multiple subplots,
+                    # replace the entire canvas figure instead of copying elements
+                    self.figure = figure
 
-                # Create new axis in our canvas figure with same projection
-                if hasattr(source_ax, 'zaxis'):
-                    new_ax = self.figure.add_subplot(111, projection='3d')
-                else:
-                    new_ax = self.figure.add_subplot(111)
+                    # Update the canvas to use the new figure
+                    self.canvas.figure = self.figure
 
-                # Copy all the plot elements from source to destination
-                for collection in source_ax.collections:
-                    if hasattr(collection, '_offsets3d'):
-                        # 3D scatter plot
-                        xs, ys, zs = collection._offsets3d
-                        if hasattr(xs, '__len__') and len(xs) > 0:
-                            colors = collection.get_facecolors()
-                            sizes = collection.get_sizes()
-                            alpha = collection.get_alpha() if collection.get_alpha() is not None else 1.0
+                    # Ensure the canvas size is appropriate for the figure
+                    self.canvas.updateGeometry()
 
-                            # Ensure all arrays have consistent lengths
-                            min_length = min(len(xs), len(ys), len(zs))
-                            if len(colors) > 0:
-                                min_length = min(min_length, len(colors))
-                            if len(sizes) > 0:
-                                min_length = min(min_length, len(sizes))
+                    # Force canvas refresh and resize
+                    self.canvas.draw()
+                    self.canvas.flush_events()
 
-                            # Trim arrays to consistent length
-                            xs_trimmed = xs[:min_length]
-                            ys_trimmed = ys[:min_length]
-                            zs_trimmed = zs[:min_length]
-                            colors_trimmed = colors[:min_length] if len(
-                                colors) > 0 else None
-                            sizes_trimmed = sizes[:min_length] if len(
-                                sizes) > 0 else None
+                    print(
+                        f"MainThread: Loaded volumetric visualization with {len(figure.axes)} subplots")
+                else:  # For single subplot figures, copy elements as before
+                    source_ax = figure.axes[0]
 
-                            # Create scatter plot with consistent arrays
-                            scatter_kwargs = {
-                                'alpha': alpha
-                            }
-                            if colors_trimmed is not None and len(colors_trimmed) > 0:
-                                scatter_kwargs['c'] = colors_trimmed
-                            if sizes_trimmed is not None and len(sizes_trimmed) > 0:
-                                scatter_kwargs['s'] = sizes_trimmed
+                    # Create new axis in our canvas figure with same projection
+                    if hasattr(source_ax, 'zaxis'):
+                        new_ax = self.figure.add_subplot(111, projection='3d')
+                    else:
+                        new_ax = self.figure.add_subplot(111)
 
-                            new_ax.scatter(xs_trimmed, ys_trimmed,
-                                           zs_trimmed, **scatter_kwargs)
+                    # Copy all the plot elements from source to destination
+                    for collection in source_ax.collections:
+                        if hasattr(collection, '_offsets3d'):
+                            # 3D scatter plot
+                            xs, ys, zs = collection._offsets3d
+                            if hasattr(xs, '__len__') and len(xs) > 0:
+                                colors = collection.get_facecolors()
+                                sizes = collection.get_sizes()
+                                alpha = collection.get_alpha() if collection.get_alpha() is not None else 1.0
 
-                # Copy line plots
-                for line in source_ax.lines:
-                    if hasattr(line, '_verts3d'):
-                        # 3D line
-                        xs, ys, zs = line._verts3d
-                        new_ax.plot(xs, ys, zs, color=line.get_color(),
-                                    alpha=line.get_alpha(), linewidth=line.get_linewidth())
+                                # Ensure all arrays have consistent lengths
+                                min_length = min(len(xs), len(ys), len(zs))
+                                if len(colors) > 0:
+                                    min_length = min(min_length, len(colors))
+                                if len(sizes) > 0:
+                                    min_length = min(min_length, len(sizes))
 
-                # Copy axis labels and title
-                new_ax.set_xlabel(source_ax.get_xlabel())
-                new_ax.set_ylabel(source_ax.get_ylabel())
-                if hasattr(source_ax, 'set_zlabel'):
-                    new_ax.set_zlabel(source_ax.get_zlabel())
-                new_ax.set_title(source_ax.get_title())
+                                # Trim arrays to consistent length
+                                xs_trimmed = xs[:min_length]
+                                ys_trimmed = ys[:min_length]
+                                zs_trimmed = zs[:min_length]
+                                colors_trimmed = colors[:min_length] if len(
+                                    colors) > 0 else None
+                                sizes_trimmed = sizes[:min_length] if len(
+                                    sizes) > 0 else None
 
-                # Copy view angle for 3D plots
-                if hasattr(source_ax, 'view_init') and hasattr(new_ax, 'view_init'):
-                    elev = source_ax.elev
-                    azim = source_ax.azim
-                    new_ax.view_init(elev=elev, azim=azim)
+                                # Create scatter plot with consistent arrays
+                                scatter_kwargs = {
+                                    'alpha': alpha
+                                }
+                                if colors_trimmed is not None and len(colors_trimmed) > 0:
+                                    scatter_kwargs['c'] = colors_trimmed
+                                if sizes_trimmed is not None and len(sizes_trimmed) > 0:
+                                    scatter_kwargs['s'] = sizes_trimmed
+
+                                new_ax.scatter(xs_trimmed, ys_trimmed,
+                                               zs_trimmed, **scatter_kwargs)
+
+                    # Copy line plots
+                    for line in source_ax.lines:
+                        if hasattr(line, '_verts3d'):
+                            # 3D line
+                            xs, ys, zs = line._verts3d
+                            new_ax.plot(xs, ys, zs, color=line.get_color(),
+                                        alpha=line.get_alpha(), linewidth=line.get_linewidth())
+
+                    # Copy axis labels and title
+                    new_ax.set_xlabel(source_ax.get_xlabel())
+                    new_ax.set_ylabel(source_ax.get_ylabel())
+                    if hasattr(source_ax, 'set_zlabel'):
+                        new_ax.set_zlabel(source_ax.get_zlabel())
+                    new_ax.set_title(source_ax.get_title())
+
+                    # Copy view angle for 3D plots
+                    if hasattr(source_ax, 'view_init') and hasattr(new_ax, 'view_init'):
+                        elev = source_ax.elev
+                        azim = source_ax.azim
+                        new_ax.view_init(elev=elev, azim=azim)
 
             # Force canvas update
             self.canvas.draw()
@@ -1049,12 +1531,31 @@ class PoreVisualizerGUI(QMainWindow):
             self.run_mist_analysis(value)
             return
 
+        # Handle new interactive controls
+        elif param_name.startswith('view_'):
+            self.handle_view_change(param_name, value)
+            return
+        elif param_name.startswith('flip_'):
+            self.handle_flip_change(param_name, value)
+            return
+        elif param_name == 'preset_view':
+            self.handle_preset_view(value)
+            return
+        elif param_name == 'auto_rotation':
+            self.handle_auto_rotation(value)
+            return
+        elif param_name == 'reset_view':
+            self.handle_reset_view()
+            return
+
         # Standard parameter update
         self.visualization_engine.update_parameters({param_name: value})
         self.status_bar.showMessage(f"Updated {param_name}: {value}")
 
-        # Auto-refresh visualization if data is loaded and auto-refresh is enabled
-        if self.current_data_path and hasattr(self, 'auto_refresh_enabled') and self.auto_refresh_enabled:
+        # Auto-refresh visualization if data is loaded and real-time updates are enabled
+        if (self.current_data_path and
+            hasattr(self.parameter_widget, 'realtime_update') and
+                self.parameter_widget.realtime_update.isChecked()):
             # Debounce rapid parameter changes by using a timer
             if not hasattr(self, 'refresh_timer'):
                 self.refresh_timer = QTimer()
@@ -1063,8 +1564,8 @@ class PoreVisualizerGUI(QMainWindow):
 
             # Restart timer on each parameter change to debounce
             self.refresh_timer.stop()
-            # 500ms delay to debounce rapid changes
-            self.refresh_timer.start(500)
+            # 300ms delay to debounce rapid changes (reduced for more responsive feel)
+            self.refresh_timer.start(300)
 
     def _do_real_time_refresh(self):
         """Perform real-time visualization refresh."""
@@ -1341,6 +1842,196 @@ class PoreVisualizerGUI(QMainWindow):
                     formatted += "\n"
 
         return formatted
+
+    def create_realistic_visualization(self):
+        """Create realistic 3D pore network visualization."""
+        if not self.enhanced_viz_engine or not self.current_data_path:
+            QMessageBox.warning(self, "Warning",
+                                "Enhanced visualization not available or no data loaded.")
+            return
+
+        try:
+            # Show progress
+            self.progress_bar.setVisible(True)
+            self.progress_bar.setValue(10)
+
+            # Load data into enhanced engine
+            if self.enhanced_viz_engine.load_data(self.current_data_path):
+                self.progress_bar.setValue(30)
+
+                # Get parameters from UI
+                board_type = self.realistic_board_combo.currentText()
+                connection_threshold = self.bond_threshold_slider.value() / 10.0
+                min_size = self.min_size_spin.value()
+                max_size = self.max_size_spin.value()
+
+                self.progress_bar.setValue(50)
+
+                # Create realistic network
+                pore_data, bond_data = self.enhanced_viz_engine.create_realistic_pore_network(
+                    board_type=board_type,
+                    connection_threshold=connection_threshold,
+                    min_pore_size=min_size,
+                    max_pore_size=max_size
+                )
+
+                self.progress_bar.setValue(80)
+
+                # Create ultra-realistic view
+                if self.enhanced_viz_engine.create_ultra_realistic_view():
+                    self.progress_bar.setValue(100)
+
+                    # Update status with network statistics
+                    stats = self.enhanced_viz_engine.get_network_statistics()
+                    status_msg = f"Realistic view: {stats.get('total_pores', 0)} pores, {stats.get('total_bonds', 0)} bonds"
+                    self.status_bar.showMessage(status_msg)
+
+                    # Switch to realistic view tab
+                    self.viz_tabs.setCurrentIndex(1)
+
+                    self.logger.info(
+                        "✓ Realistic visualization created successfully")
+                else:
+                    QMessageBox.warning(
+                        self, "Warning", "Failed to create realistic view.")
+            else:
+                QMessageBox.warning(
+                    self, "Warning", "Failed to load data for realistic visualization.")
+
+        except Exception as e:
+            QMessageBox.critical(
+                self, "Error", f"Failed to create realistic visualization:\n{str(e)}")
+            self.logger.error(f"Realistic visualization error: {e}")
+        finally:
+            self.progress_bar.setVisible(False)
+
+    def update_realistic_view(self):
+        """Update realistic view when parameters change."""
+        if self.enhanced_viz_engine and self.current_data_path:
+            # Only update if auto-refresh is enabled or explicitly requested
+            if self.auto_refresh_enabled:
+                self.create_realistic_visualization()
+
+    def toggle_auto_refresh(self):
+        """Toggle automatic refresh of realistic view."""
+        self.auto_refresh_enabled = not self.auto_refresh_enabled
+        status = "enabled" if self.auto_refresh_enabled else "disabled"
+        self.status_bar.showMessage(f"Auto-refresh {status}")
+
+    def export_realistic_view(self):
+        """Export high-resolution realistic visualization."""
+        if not self.enhanced_viz_engine:
+            QMessageBox.warning(
+                self, "Warning", "Enhanced visualization not available.")
+            return
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Export Realistic View",
+            "realistic_pore_visualization.png",
+            "PNG Files (*.png);;JPEG Files (*.jpg);;All Files (*)"
+        )
+
+        if file_path:
+            try:
+                if self.enhanced_viz_engine.export_realistic_visualization(file_path, (1920, 1080)):
+                    QMessageBox.information(
+                        self, "Success", f"Realistic view exported to:\n{file_path}")
+                else:
+                    QMessageBox.warning(
+                        self, "Warning", "Failed to export realistic view.")
+            except Exception as e:
+                QMessageBox.critical(
+                    self, "Error", f"Export failed:\n{str(e)}")
+
+    def show_network_statistics(self):
+        """Show detailed network statistics."""
+        if not self.enhanced_viz_engine:
+            return
+
+        stats = self.enhanced_viz_engine.get_network_statistics()
+        if not stats:
+            QMessageBox.information(self, "Info", "No network data available.")
+            return
+
+        stats_text = f"""
+Network Statistics:
+
+Total Pores: {stats.get('total_pores', 0)}
+Total Bonds: {stats.get('total_bonds', 0)}
+
+Average Pore Size: {stats.get('average_pore_size', 0):.2f} nm
+Pore Size Std Dev: {stats.get('pore_size_std', 0):.2f} nm
+
+Average Bond Length: {stats.get('average_bond_length', 0):.3f}
+Network Connectivity: {stats.get('connectivity', 0):.3f}
+Network Density: {stats.get('network_density', 0):.6f}
+        """
+
+        QMessageBox.information(self, "Network Statistics", stats_text)
+
+    def on_view_changed(self, param, value):
+        """Handle view parameter changes (elevation, azimuth, roll, zoom)."""
+        if self.realtime_update.isChecked():
+            self.parameter_changed.emit(f'view_{param}', value)
+
+    def on_flip_changed(self, axis):
+        """Handle flip/mirror operations."""
+        button = getattr(self, f'flip_{axis}_btn')
+        is_flipped = button.isChecked()
+        self.parameter_changed.emit(f'flip_{axis}', is_flipped)
+
+    def set_preset_view(self, view_name):
+        """Set camera to a preset view position."""
+        # Define preset view angles
+        preset_views = {
+            'front': {'elevation': 0, 'azimuth': 0, 'roll': 0},
+            'back': {'elevation': 0, 'azimuth': 180, 'roll': 0},
+            'left': {'elevation': 0, 'azimuth': -90, 'roll': 0},
+            'right': {'elevation': 0, 'azimuth': 90, 'roll': 0},
+            'top': {'elevation': 90, 'azimuth': 0, 'roll': 0},
+            'bottom': {'elevation': -90, 'azimuth': 0, 'roll': 0},
+            'isometric': {'elevation': 30, 'azimuth': -60, 'roll': 0}
+        }
+
+        if view_name in preset_views:
+            view = preset_views[view_name]
+
+            # Update sliders without triggering signals
+            self.elevation_slider.blockSignals(True)
+            self.azimuth_slider.blockSignals(True)
+            self.roll_slider.blockSignals(True)
+
+            self.elevation_slider.setValue(view['elevation'])
+            self.azimuth_slider.setValue(view['azimuth'])
+            self.roll_slider.setValue(view['roll'])
+
+            self.elevation_slider.blockSignals(False)
+            self.azimuth_slider.blockSignals(False)
+            self.roll_slider.blockSignals(False)
+
+            # Emit the preset view change
+            self.parameter_changed.emit('preset_view', view_name)
+
+    def toggle_auto_rotation(self):
+        """Toggle automatic rotation animation."""
+        is_enabled = self.rotate_anim_btn.isChecked()
+        self.parameter_changed.emit('auto_rotation', is_enabled)
+
+    def reset_view_to_default(self):
+        """Reset all view parameters to default values."""
+        # Reset sliders to default positions
+        self.elevation_slider.setValue(30)
+        self.azimuth_slider.setValue(-60)
+        self.roll_slider.setValue(0)
+        self.zoom_slider.setValue(100)
+
+        # Reset flip buttons
+        self.flip_x_btn.setChecked(False)
+        self.flip_y_btn.setChecked(False)
+        self.flip_z_btn.setChecked(False)
+
+        # Emit reset signal
+        self.parameter_changed.emit('reset_view', True)
 
 
 def main():

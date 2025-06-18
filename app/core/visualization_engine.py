@@ -4,16 +4,22 @@ Enhanced Visualization Engine with MIST-like capabilities
 Supports multiple visualization types including DEM particles, live rendering, and advanced analysis
 """
 
+import warnings
+import gc
+import logging
+from typing import Dict, Any, Optional, Tuple, List
+from mpl_toolkits.mplot3d import Axes3D
+from matplotlib.figure import Figure
+import matplotlib.pyplot as plt
 import os
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-from matplotlib.figure import Figure
-from mpl_toolkits.mplot3d import Axes3D
-from typing import Dict, Any, Optional, Tuple, List
-import logging
-import gc
-import warnings
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend
+# Disable all interactive features
+plt.ioff()
+matplotlib.rcParams['interactive'] = False
+
 
 # Import modular components
 try:
@@ -22,8 +28,21 @@ try:
     from .mist_analyzer import MISTAnalyzer
     DEM_AVAILABLE = True
 except ImportError as e:
-    print(f"Warning: Some advanced modules not available: {e}")
+    print(f"Warning: Some DEM modules not available: {e}")
     DEM_AVAILABLE = False
+
+# Import volumetric visualization separately with fallback
+try:
+    from ..plot.volumetric_3d_visualization import create_volumetric_pore_visualization
+    VOLUMETRIC_AVAILABLE = True
+except ImportError:
+    try:
+        # Try absolute import as fallback
+        from plot.volumetric_3d_visualization import create_volumetric_pore_visualization
+        VOLUMETRIC_AVAILABLE = True
+    except ImportError as e:
+        print(f"Warning: Volumetric visualization not available: {e}")
+        VOLUMETRIC_AVAILABLE = False
 
 
 class VisualizationEngine:
@@ -130,18 +149,21 @@ class VisualizationEngine:
         self.current_data_path = data_path
 
     def _configure_matplotlib_for_memory_efficiency(self):
-        """Configure matplotlib settings for memory efficiency."""
-        # Limit the number of figures to prevent memory issues
-        plt.rcParams['figure.max_open_warning'] = 10
+        """Configure matplotlib to prevent popup windows and memory leaks"""
+        import matplotlib
+        # Force non-interactive backend
+        matplotlib.use('Agg')  # Use Agg for thread safety
+        import matplotlib.pyplot as plt
+        plt.ioff()  # Turn off interactive mode completely
 
-        # Suppress specific matplotlib warnings about too many figures
-        warnings.filterwarnings(
-            'ignore', 'More than \d+ figures have been opened', UserWarning)
+        # Configure to prevent showing figures
 
-        # Set reasonable figure defaults to reduce memory usage
-        plt.rcParams['figure.dpi'] = 80  # Lower DPI for memory efficiency
-        plt.rcParams['figure.facecolor'] = 'white'
-        plt.rcParams['axes.facecolor'] = 'white'
+        matplotlib.rcParams['interactive'] = False
+        matplotlib.rcParams['figure.max_open_warning'] = 0
+
+        # Memory management settings
+        matplotlib.rcParams['figure.autolayout'] = True
+        matplotlib.rcParams['figure.constrained_layout.use'] = True
 
     def _manage_figure_memory(self, new_figure: Figure) -> Figure:
         """Manage figure memory by tracking and cleaning up old figures."""
@@ -215,12 +237,21 @@ class VisualizationEngine:
 
         Args:
             data_path: Path to pore data file
-            visualization_type: Type of visualization ('enhanced', 'clean', 'thermal', 'sectioned')
+            visualization_type: Type of visualization ('enhanced', 'clean', 'thermal', 'sectioned', '3d_volumetric')
 
         Returns:
             matplotlib Figure object
         """
         try:
+            # Handle special visualization types
+            if visualization_type == '3d_volumetric':
+                if VOLUMETRIC_AVAILABLE:
+                    return create_volumetric_pore_visualization(data_path, 'all')
+                else:
+                    self.logger.warning(
+                        "Volumetric visualization not available, falling back to enhanced")
+                    visualization_type = 'enhanced'
+
             # Store current data path for real-time updates
             self.set_current_data_path(data_path)
 
@@ -228,11 +259,10 @@ class VisualizationEngine:
             df = pd.read_csv(data_path)
 
             # Create figure
-            fig = plt.figure(figsize=(12, 9))
+            fig = Figure(figsize=(12, 9))
             fig = self._manage_figure_memory(fig)
-            ax = fig.add_subplot(111, projection='3d')
-
             # Generate or use existing coordinates
+            ax = fig.add_subplot(111, projection='3d')
             if all(col in df.columns for col in ['X', 'Y', 'Z']):
                 # Use existing coordinates, but remove any NaN values
                 coord_data = df[['X', 'Y', 'Z']].dropna()
@@ -245,39 +275,60 @@ class VisualizationEngine:
                 y = np.random.uniform(-10, 10, n_points)
                 z = np.random.uniform(-10, 10, n_points)
 
+                # Store generated coordinates in the DataFrame for analysis
+                df = df.head(n_points).copy()  # Ensure consistent length
+                df['X'] = x
+                df['Y'] = y
+                df['Z'] = z
+
+                # Store for future use
+                self.current_coordinates = np.column_stack([x, y, z])
+                self.current_sizes = df.iloc[:, 0].values if len(
+                    df.columns) > 0 else np.ones(n_points) * 50
+
             # Apply axis scaling
             x *= self.parameters['axis_x_scale']
             y *= self.parameters['axis_y_scale']
-            z *= self.parameters['axis_z_scale']
-
             # Generate sphere sizes with increased base size - ensure same length as coordinates
+            z *= self.parameters['axis_z_scale']
             base_size = self.parameters['sphere_base_size']
-            if 'Pore_Radius' in df.columns:
-                # Use only as many radius values as we have coordinates, remove NaN values
-                pore_radius = df['Pore_Radius'].dropna().values
-                # Ensure we have exactly n_points values by resampling or padding
-                if len(pore_radius) >= n_points:
+
+            # Try to find numeric size data in any relevant column
+            size_data = None
+            size_columns = ['Pore_Radius', 'Diameter',
+                            'Size', 'Pore Diameter [nm]', 'Pore_Diameter']
+
+            for col in size_columns:
+                if col in df.columns:
+                    try:
+                        temp_data = pd.to_numeric(
+                            df[col], errors='coerce').dropna().values
+                        if len(temp_data) > 0:
+                            size_data = temp_data
+                            break
+                    except:
+                        continue
+
+            if size_data is not None and len(size_data) > 0:
+                # Ensure we have exactly n_points values
+                if len(size_data) >= n_points:
                     # Sample exactly n_points values
                     indices = np.random.choice(
-                        len(pore_radius), n_points, replace=False)
-                    pore_radius = pore_radius[indices]
-                elif len(pore_radius) > 0:
-                    # Pad with resampled values to reach n_points
-                    mean_radius = np.mean(pore_radius)
-                    additional_needed = n_points - len(pore_radius)
-                    additional_radii = np.random.choice(
-                        pore_radius, additional_needed, replace=True)
-                    pore_radius = np.concatenate(
-                        [pore_radius, additional_radii])
+                        len(size_data), n_points, replace=False)
+                    pore_radius = size_data[indices]
                 else:
-                    # No valid data, use default values
-                    pore_radius = np.random.uniform(0.5, 2.0, n_points)
+                    # Pad with resampled values to reach n_points
+                    additional_needed = n_points - len(size_data)
+                    additional_radii = np.random.choice(
+                        size_data, additional_needed, replace=True)
+                    pore_radius = np.concatenate([size_data, additional_radii])
 
                 # Ensure exactly n_points elements
                 pore_radius = pore_radius[:n_points]
                 sizes = pore_radius * base_size * \
                     self.parameters['size_multiplier']
             else:
+                # Generate random sizes if no valid data found
                 sizes = np.random.uniform(
                     self.parameters['sphere_size_range'][0],
                     self.parameters['sphere_size_range'][1],
@@ -330,7 +381,7 @@ class VisualizationEngine:
         except Exception as e:
             self.logger.error(f"Error creating visualization: {e}")
             # Return a simple error figure
-            fig = plt.figure(figsize=(10, 8))
+            fig = Figure(figsize=(10, 8))
             fig = self._manage_figure_memory(fig)
             ax = fig.add_subplot(111, projection='3d')
             ax.text(0, 0, 0, f"Error: {str(e)}", fontsize=12, ha='center')
@@ -508,15 +559,19 @@ class VisualizationEngine:
             Dictionary containing analysis results
         """
         try:
-            if not DEM_AVAILABLE:
-                self.logger.warning("MIST analyzer not available")
-                return {'error': 'MIST analyzer module not available'}
+            # Import MISTAnalyzer here to avoid circular imports
+            from .mist_analyzer import MISTAnalyzer
 
             # Create MIST analyzer with current parameters
             mist_analyzer = MISTAnalyzer(self.parameters)
 
-            # Perform comprehensive analysis
-            results = mist_analyzer.analyze_pore_network(data_path)
+            # Use the current data from the visualization engine if available
+            if hasattr(self, 'current_coordinates') and hasattr(self, 'current_sizes'):
+                # Use data already loaded into the visualization engine
+                results = mist_analyzer.analyze_with_engine_data(self)
+            else:
+                # Fallback to loading from file
+                results = mist_analyzer.analyze_pore_network(data_path)
 
             self.logger.info(f"MIST analysis completed for {data_path}")
             return results
@@ -576,8 +631,8 @@ class VisualizationEngine:
 
     def _create_empty_figure(self) -> Figure:
         """Create an empty figure when an error occurs."""
-        fig = plt.figure(figsize=self.parameters['figure_size'],
-                         facecolor=self.parameters['background_color'])
+        fig = Figure(figsize=self.parameters['figure_size'],
+                     facecolor=self.parameters['background_color'])
         ax = fig.add_subplot(111, projection='3d')
         ax.text(0, 0, 0, 'Visualization Error\nCheck console for details',
                 ha='center', va='center', fontsize=14,
@@ -592,8 +647,8 @@ class VisualizationEngine:
         n_points = min(len(df), self.parameters['num_spheres'])
 
         # Create figure
-        fig = plt.figure(figsize=self.parameters['figure_size'],
-                         facecolor=self.parameters['background_color'])
+        fig = Figure(figsize=self.parameters['figure_size'],
+                     facecolor=self.parameters['background_color'])
         ax = fig.add_subplot(111, projection='3d')
 
         # Use DataFrame columns if available, otherwise generate
@@ -632,8 +687,8 @@ class VisualizationEngine:
         n_points = min(len(df), self.parameters['num_spheres'])
 
         # Create figure
-        fig = plt.figure(figsize=self.parameters['figure_size'],
-                         facecolor=self.parameters['background_color'])
+        fig = Figure(figsize=self.parameters['figure_size'],
+                     facecolor=self.parameters['background_color'])
         ax = fig.add_subplot(111, projection='3d')
 
         # Enhanced data handling
@@ -692,7 +747,7 @@ class VisualizationEngine:
 
         # Add colorbar
         if hasattr(fig, 'colorbar'):
-            plt.colorbar(scatter, ax=ax, shrink=0.5, aspect=30,
+            fig.colorbar(scatter, ax=ax, shrink=0.5, aspect=30,
                          label='Distance from Origin')
 
         return fig
@@ -702,9 +757,9 @@ class VisualizationEngine:
         n_points = min(len(df), self.parameters['num_spheres'])
 
         # Create figure with larger size for detail
-        fig = plt.figure(figsize=(self.parameters['figure_size'][0] * 1.2,
-                                  self.parameters['figure_size'][1] * 1.2),
-                         facecolor='black')
+        fig = Figure(figsize=(self.parameters['figure_size'][0] * 1.2,
+                              self.parameters['figure_size'][1] * 1.2),
+                     facecolor='black')
         ax = fig.add_subplot(111, projection='3d')
 
         # Ultra-realistic data handling
@@ -805,8 +860,8 @@ class VisualizationEngine:
         n_points = min(len(df), self.parameters['num_spheres'])
 
         # Create figure
-        fig = plt.figure(figsize=self.parameters['figure_size'],
-                         facecolor=self.parameters['background_color'])
+        fig = Figure(figsize=self.parameters['figure_size'],
+                     facecolor=self.parameters['background_color'])
         ax1 = fig.add_subplot(111, projection='3d')
 
         # Handle coordinates
@@ -851,7 +906,7 @@ class VisualizationEngine:
                               linewidth=0.5)
 
         # Add colorbar
-        cbar = plt.colorbar(scatter, ax=ax1, shrink=0.5, aspect=20)
+        cbar = fig.colorbar(scatter, ax=ax1, shrink=0.5, aspect=20)
         cbar.set_label('Pore Radius (μm)', rotation=270, labelpad=15)
 
         # Scientific labels
@@ -872,7 +927,7 @@ class VisualizationEngine:
         df = pd.read_csv(data_path)
 
         # Create clean presentation figure
-        fig = plt.figure(figsize=(16, 10))
+        fig = Figure(figsize=(16, 10))
         fig = self._manage_figure_memory(fig)
         ax = fig.add_subplot(111, projection='3d')
 
@@ -946,7 +1001,7 @@ class VisualizationEngine:
         df = pd.read_csv(data_path)
 
         # Create dual-view figure
-        fig = plt.figure(figsize=(20, 10))
+        fig = Figure(figsize=(20, 10))
         fig = self._manage_figure_memory(fig)
 
         # Left panel: Complete structure
@@ -999,7 +1054,7 @@ class VisualizationEngine:
         ax1.view_init(elev=20, azim=45)
         ax2.view_init(elev=20, azim=45)
 
-        plt.tight_layout()
+        fig.tight_layout()
         return fig
 
     def _get_enhanced_colors(self, n_points: int) -> np.ndarray:
@@ -1196,10 +1251,16 @@ class VisualizationEngine:
 
     def create_comparison_view(self, data_path: str) -> Figure:
         """Create side-by-side comparison of different visualization types."""
-        fig, axes = plt.subplots(2, 2, figsize=(
-            16, 12), subplot_kw={'projection': '3d'})
+        fig = Figure(figsize=(16, 12))
         fig = self._manage_figure_memory(fig)
-        axes = axes.flatten()
+
+        # Create subplots manually
+        axes = []
+        for i in range(4):
+            row = i // 2
+            col = i % 2
+            ax = fig.add_subplot(2, 2, i+1, projection='3d')
+            axes.append(ax)
 
         viz_types = ['enhanced', 'clean', 'thermal', 'sectioned']
         titles = ['Enhanced View', 'Clean View',
@@ -1215,7 +1276,7 @@ class VisualizationEngine:
             except Exception as e:
                 axes[i].text(0, 0, 0, f"Error: {viz_type}", ha='center')
 
-        plt.tight_layout()
+        fig.tight_layout()
         return fig
 
     def _create_size_distribution_view(self, data_path: str) -> Figure:
@@ -1224,7 +1285,7 @@ class VisualizationEngine:
         df = pd.read_csv(data_path)
 
         # Create comprehensive size distribution figure
-        fig = plt.figure(figsize=(16, 12))
+        fig = Figure(figsize=(16, 12))
         fig = self._manage_figure_memory(fig)
 
         # Generate data for size distribution
@@ -1274,7 +1335,7 @@ class VisualizationEngine:
                               edgecolors='black',
                               linewidth=0.3)
 
-        plt.colorbar(scatter, ax=ax1, shrink=0.5, label='Pore Size (μm)')
+        fig.colorbar(scatter, ax=ax1, shrink=0.5, label='Pore Size (μm)')
         ax1.set_title('3D Size Distribution View',
                       fontsize=12, fontweight='bold')
         ax1.set_xlabel('X Position')
@@ -1364,7 +1425,7 @@ PERCENTILES
         ax6.set_ylabel('Pore Size (μm)')
         ax6.grid(True, alpha=0.3)
 
-        plt.tight_layout()
+        fig.tight_layout()
         return fig
 
     def _create_clustering_analysis_view(self, data_path: str) -> Figure:
@@ -1380,7 +1441,7 @@ PERCENTILES
         df = pd.read_csv(data_path)
 
         # Create comprehensive clustering analysis figure
-        fig = plt.figure(figsize=(16, 12))
+        fig = Figure(figsize=(16, 12))
         fig = self._manage_figure_memory(fig)
 
         # Generate data for clustering
@@ -1498,7 +1559,7 @@ Spatial Distribution: 3D
         # Additional plots can be added here
         # ...existing clustering plots...
 
-        plt.tight_layout()
+        fig.tight_layout()
         return fig
 
     def _create_fallback_clustering_view(self, data_path: str) -> Figure:
@@ -1507,7 +1568,7 @@ Spatial Distribution: 3D
         df = pd.read_csv(data_path)
 
         # Create simple clustering figure
-        fig = plt.figure(figsize=(12, 8))
+        fig = Figure(figsize=(12, 8))
         fig = self._manage_figure_memory(fig)
 
         n_points = min(len(df), 500)
@@ -1539,7 +1600,7 @@ Spatial Distribution: 3D
         ax.set_zlabel('Z Position')
         ax.legend()
 
-        plt.tight_layout()
+        fig.tight_layout()
         return fig
 
     def _calculate_axis_bounds_from_dimensions(self):
@@ -1607,3 +1668,143 @@ Spatial Distribution: 3D
             'aspect_ratio': self.parameters['custom_aspect_ratio'],
             'maintain_aspect_ratio': self.parameters['maintain_aspect_ratio']
         }
+
+    def _create_ultra_realistic_view(self, data_path, parameters=None):
+        """Create ultra-realistic 3D view (placeholder for enhanced engine)"""
+        self.logger.warning(
+            "Ultra-realistic view requires enhanced visualization engine")
+        return None
+
+    def create_ultra_realistic_view(self, data_path, parameters=None):
+        """Public method to create ultra-realistic view"""
+        return self._create_ultra_realistic_view(data_path, parameters)
+
+    def get_coordinate_data(self) -> Optional[np.ndarray]:
+        """Get current coordinate data for analysis."""
+        return getattr(self, 'current_coordinates', None)
+
+    def get_size_data(self) -> Optional[np.ndarray]:
+        """Get current size data for analysis."""
+        return getattr(self, 'current_sizes', None)
+
+    def get_current_data_for_analysis(self) -> Dict[str, np.ndarray]:
+        """Get all current data needed for MIST analysis."""
+        return {
+            'coordinates': self.get_coordinate_data(),
+            'sizes': self.get_size_data(),
+            'has_data': self.get_coordinate_data() is not None and self.get_size_data() is not None
+        }
+
+    def _create_scientific_analysis_view(self, data_path: str) -> Figure:
+        """Create scientific analysis view with multiple plots."""
+        try:
+            # Load data
+            df = pd.read_csv(data_path)
+            if df.empty:
+                return self._create_empty_figure()
+
+            # Create figure with subplots
+            fig = Figure(figsize=(16, 12))
+            fig = self._manage_figure_memory(fig)
+
+            # Create multiple analysis views
+            ax1 = fig.add_subplot(2, 2, 1, projection='3d')
+            ax2 = fig.add_subplot(2, 2, 2)
+            ax3 = fig.add_subplot(2, 2, 3)
+            ax4 = fig.add_subplot(2, 2, 4)
+
+            # Generate data for analysis
+            n_points = min(len(df), self.parameters['num_spheres'])
+            x = np.random.uniform(-10, 10, n_points)
+            y = np.random.uniform(-10, 10, n_points)
+            z = np.random.uniform(-10, 10, n_points)
+
+            # Get first numeric column for sizes
+            size_col = None
+            for col in df.columns:
+                try:
+                    sizes = pd.to_numeric(df[col], errors='coerce').dropna()
+                    if len(sizes) > 0:
+                        size_col = col
+                        break
+                except:
+                    continue
+
+            if size_col:
+                sizes = pd.to_numeric(df[size_col], errors='coerce').fillna(50)[
+                    :n_points]
+            else:
+                sizes = np.random.uniform(10, 100, n_points)
+
+            # 3D scatter plot
+            colors = plt.cm.viridis(np.linspace(0, 1, n_points))
+            scatter = ax1.scatter(x, y, z, s=sizes*10, c=colors, alpha=0.7)
+            ax1.set_title('3D Pore Distribution', fontweight='bold')
+            ax1.set_xlabel('X (μm)')
+            ax1.set_ylabel('Y (μm)')
+            ax1.set_zlabel('Z (μm)')
+
+            # Size distribution histogram
+            ax2.hist(sizes, bins=20, alpha=0.7,
+                     color='skyblue', edgecolor='black')
+            ax2.set_title('Pore Size Distribution', fontweight='bold')
+            ax2.set_xlabel('Pore Size (nm)')
+            ax2.set_ylabel('Frequency')
+            ax2.grid(True, alpha=0.3)
+
+            # Cumulative distribution
+            sorted_sizes = np.sort(sizes)
+            cumulative = np.arange(
+                1, len(sorted_sizes) + 1) / len(sorted_sizes)
+            ax3.plot(sorted_sizes, cumulative, 'b-', linewidth=2)
+            ax3.set_title('Cumulative Size Distribution', fontweight='bold')
+            ax3.set_xlabel('Pore Size (nm)')
+            ax3.set_ylabel('Cumulative Probability')
+            ax3.grid(True, alpha=0.3)            # Statistical summary
+            stats_text = f"""Statistical Summary:
+Mean Size: {np.mean(sizes):.2f} nm
+Median Size: {np.median(sizes):.2f} nm
+Std Dev: {np.std(sizes):.2f} nm
+Min Size: {np.min(sizes):.2f} nm
+Max Size: {np.max(sizes):.2f} nm
+Total Pores: {len(sizes)}"""
+            ax4.text(0.1, 0.9, stats_text, transform=ax4.transAxes,
+                     fontsize=10, verticalalignment='top', fontfamily='monospace',
+                     bbox=dict(boxstyle="round,pad=0.5", facecolor="lightgray"))
+            ax4.set_title('Statistical Analysis', fontweight='bold')
+            ax4.axis('off')
+
+            fig.tight_layout()
+            return fig
+
+        except Exception as e:
+            print(f"Error creating scientific analysis view: {e}")
+            return self._create_empty_figure()
+
+    def create_volumetric_pore_visualization_with_options(self, data_path: str, sample_type: str = 'all') -> Figure:
+        """
+        Create 3D volumetric pore visualization with sample selection options.
+
+        Args:
+            data_path: Path to pore data file
+            sample_type: 'all' for all samples, 'T1', 'T2', or 'T3' for specific sample
+
+        Returns:
+            matplotlib Figure object
+        """
+        try:
+            if VOLUMETRIC_AVAILABLE:
+                self.logger.info(
+                    f"Creating volumetric visualization for {sample_type}")
+                figure = create_volumetric_pore_visualization(
+                    data_path, sample_type)
+                figure = self._manage_figure_memory(figure)
+                self.last_generated_figure = figure
+                return figure
+            else:
+                self.logger.error(
+                    "Volumetric visualization module not available")
+                return self._create_empty_figure()
+        except Exception as e:
+            self.logger.error(f"Error creating volumetric visualization: {e}")
+            return self._create_empty_figure()

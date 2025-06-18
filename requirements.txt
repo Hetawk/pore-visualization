@@ -6,11 +6,12 @@ scipy>=1.7.0
 
 # 3D visualization and plotting
 plotly>=5.0.0
-mayavi>=4.7.0
-vtk>=9.0.0
+# mayavi>=4.7.0  # Commented out - can be problematic on Windows
+# vtk>=9.0.0     # Commented out - may have compatibility issues
 
 # GUI and interface
-tkinter-page>=3.6.0
+# tkinter-page>=3.6.0  # Fixed: This version doesn't exist
+tkinter-page>=0.0.5     # Use available version
 PyQt5>=5.15.0
 
 # Scientific computing
@@ -37,4 +38,4 @@ flake8>=3.9.0
 # Optional advanced features
 meshio>=5.0.0
 trimesh>=3.9.0
-open3d>=0.13.0
+# open3d>=0.13.0  # May have Python 3.12 compatibility issues

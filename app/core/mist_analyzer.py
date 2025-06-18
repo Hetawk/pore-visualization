@@ -72,6 +72,57 @@ class MISTAnalyzer:
                 f"Error analyzing pore network from {data_path}: {e}")
             return {'error': f'Failed to analyze pore network: {str(e)}'}
 
+    def analyze_with_engine_data(self, viz_engine) -> Dict[str, Any]:
+        """
+        Analyze pore network using data from visualization engine.
+
+        Args:
+            viz_engine: VisualizationEngine instance with current data
+
+        Returns:
+            Dictionary containing comprehensive analysis results
+        """
+        try:
+            # Get current data from visualization engine
+            analysis_data = viz_engine.get_current_data_for_analysis()
+
+            if not analysis_data.get('has_data', False):
+                return {
+                    'connectivity': {'error': 'No coordinate data available'},
+                    'size_distribution': {'error': 'No size data available'},
+                    'spatial_distribution': {'error': 'No coordinate data available'},
+                    'clustering': {'error': 'No coordinate data available'},
+                    'anisotropy': {'error': 'No coordinate data available'},
+                    'percolation': {'error': 'No coordinate data available'},
+                    'tortuosity': {'error': 'No coordinate data available'}
+                }
+
+            coordinates = analysis_data['coordinates']
+            sizes = analysis_data['sizes']
+
+            # Create a DataFrame for compatibility with existing methods
+            data = pd.DataFrame({
+                'X': coordinates[:, 0],
+                'Y': coordinates[:, 1],
+                'Z': coordinates[:, 2],
+                'size': sizes
+            })
+
+            # Perform comprehensive analysis
+            return self.analyze_pore_structure(data)
+
+        except Exception as e:
+            self.logger.error(f"Error analyzing with engine data: {e}")
+            return {
+                'connectivity': {'error': f'Analysis failed: {str(e)}'},
+                'size_distribution': {'error': f'Analysis failed: {str(e)}'},
+                'spatial_distribution': {'error': f'Analysis failed: {str(e)}'},
+                'clustering': {'error': f'Analysis failed: {str(e)}'},
+                'anisotropy': {'error': f'Analysis failed: {str(e)}'},
+                'percolation': {'error': f'Analysis failed: {str(e)}'},
+                'tortuosity': {'error': f'Analysis failed: {str(e)}'}
+            }
+
     def _analyze_connectivity(self, data: pd.DataFrame) -> Dict[str, Any]:
         """Analyze pore connectivity and coordination."""
         if 'X' not in data.columns or 'Y' not in data.columns or 'Z' not in data.columns:
@@ -108,7 +159,7 @@ class MISTAnalyzer:
     def _analyze_size_distribution(self, data: pd.DataFrame) -> Dict[str, Any]:
         """Analyze pore size distribution."""
         size_column = None
-        for col in ['Pore_Radius', 'Diameter', 'Size', 'Radius']:
+        for col in ['size', 'Pore_Radius', 'Diameter', 'Size', 'Radius']:
             if col in data.columns:
                 size_column = col
                 break

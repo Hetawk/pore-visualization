@@ -99,19 +99,28 @@ class DebugLogger:
         for handler in logger.handlers[:]:
             logger.removeHandler(handler)
 
-        # File handler
-        file_handler = logging.FileHandler(self.log_dir / filename, mode='w')
+        # File handler with UTF-8 encoding
+        file_handler = logging.FileHandler(
+            self.log_dir / filename, mode='w', encoding='utf-8')
         file_handler.setLevel(level)
         file_formatter = logging.Formatter(format_str)
         file_handler.setFormatter(file_formatter)
         logger.addHandler(file_handler)
 
-        # Console handler (only for main logger and errors)
+        # Console handler (only for main logger and errors) with UTF-8 encoding
         if name in ['main', 'errors'] or level >= logging.ERROR:
             console_handler = logging.StreamHandler(sys.stdout)
             console_handler.setLevel(max(level, logging.INFO))
             console_formatter = logging.Formatter("%(levelname)s: %(message)s")
             console_handler.setFormatter(console_formatter)
+
+            # Try to set UTF-8 encoding for console
+            try:
+                if hasattr(console_handler.stream, 'reconfigure'):
+                    console_handler.stream.reconfigure(encoding='utf-8')
+            except:
+                pass  # Fallback to default encoding
+
             logger.addHandler(console_handler)
 
         return logger
